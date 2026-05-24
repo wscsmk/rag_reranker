@@ -9,7 +9,6 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from sentence_transformers import CrossEncoder
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 EMBEDDING_MODEL_PATH = os.path.join(BASE_DIR, "models", "rag", "acge_text_embedding")
