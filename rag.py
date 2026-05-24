@@ -1,5 +1,10 @@
 import os
 import warnings
+
+import torch
+from requests.compat import chardet
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -7,8 +12,8 @@ from langchain_community.vectorstores import FAISS
 from sentence_transformers import CrossEncoder
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-EMBEDDING_MODEL_PATH = os.path.join(BASE_DIR, "models", "rag", "bge-small-zh-v1.5")
-RERANKER_MODEL_PATH = os.path.join(BASE_DIR, "models", "rag", "bge-reranker-base")
+EMBEDDING_MODEL_PATH = os.path.join(BASE_DIR, "models", "rag", "acge_text_embedding")
+RERANKER_MODEL_PATH = os.path.join(BASE_DIR, "models", "rag", "Qwen3-Reranker-4B")
 KNOWLEDGE_DIR = os.path.join(BASE_DIR, "knowledge")
 VECTOR_DB_PATH = os.path.join(BASE_DIR, "vector_db")
 TOP_K_RETRIEVE = 5
@@ -52,6 +57,21 @@ def check_model(path: str, name: str):
 from langchain_community.document_loaders import TextLoader, Docx2txtLoader
 
 
+def load_file_with_fallback(file_path):
+    # 1. 检测编码
+    with open(file_path, 'rb') as f:
+        raw_data = f.read()
+        detected = chardet.detect(raw_data)
+        encoding = detected.get('encoding', 'utf-8')
+
+    # 2. 显式传入检测到的编码
+    try:
+        loader = TextLoader(file_path, encoding=encoding, autodetect_encoding=False)
+        return loader.load()
+    except Exception as e:
+        print(f"加载出错: {e}")
+        return None
+
 def load_and_split_documents():
     print(f"加载知识库目录: {KNOWLEDGE_DIR}")
     documents = []
@@ -65,8 +85,7 @@ def load_and_split_documents():
         ext = os.path.splitext(file)[1].lower()
         try:
             if ext == ".txt":
-                loader = TextLoader(file_path, encoding="utf-8")
-                docs = loader.load()
+                docs = load_file_with_fallback(file_path)
                 documents.extend(docs)
                 print(f"  已加载 TXT: {file}")
             elif ext == ".docx":
@@ -116,30 +135,68 @@ def build_or_load_vector_store(embeddings):
     print(f"已保存到: {VECTOR_DB_PATH}")
     return vs
 
+
 def reranker_results(query):
     check_model(EMBEDDING_MODEL_PATH, "嵌入模型")
     check_model(RERANKER_MODEL_PATH, "重排序模型")
+
     print("\n加载嵌入模型 ...")
     embeddings = HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL_PATH,
-        model_kwargs={"device": "cpu"},
+        model_kwargs={"device": "cuda"},
         encode_kwargs={"normalize_embeddings": True},
     )
     vector_store = build_or_load_vector_store(embeddings)
-    print("加载重排序模型 ...")
-    reranker = CrossEncoder(RERANKER_MODEL_PATH, device="cpu")
-    results = vector_store.similarity_search_with_score(query, k=TOP_K_RETRIEVE)
-    # print(f"\n--- 初步召回 Top {len(results)} （分数越小越相似）---")
-    # for i, (doc, score) in enumerate(results, 1):
-    #     print(f"[{i}] score={score:.4f}  {doc.page_content}")
-    pairs = [[query, doc.page_content] for doc, _ in results]
-    rerank_scores = reranker.predict(pairs).tolist()
-    reranked = sorted(
-        zip(results, rerank_scores),
-        key=lambda x: x[1],
-        reverse=True,
-    )[:TOP_K_RERANK]
 
+    print("加载重排序模型 ...")
+    # 使用 transformers 原生加载
+    tokenizer = AutoTokenizer.from_pretrained(RERANKER_MODEL_PATH, trust_remote_code=True)
+    reranker = AutoModelForSequenceClassification.from_pretrained(
+        RERANKER_MODEL_PATH,
+        trust_remote_code=True,
+        torch_dtype=torch.float16  # 节省显存
+    ).to("cuda")  # 放到 GPU 上
+    reranker.eval()
+
+    # 初步检索
+    results = vector_store.similarity_search_with_score(query, k=TOP_K_RETRIEVE)
+    print(f"\n--- 初步召回 Top {len(results)} （分数越小越相似）---")
+    for i, (doc, score) in enumerate(results, 1):
+        print(f"[{i}] score={score:.4f}  {doc.page_content[:100]}...")
+
+    # 过滤空文档
+    valid_results = [(doc, score) for doc, score in results if doc.page_content.strip()]
+    if not valid_results:
+        print("警告：所有检索结果均为空文档")
+        return []
+
+    # 准备输入对
+    pairs = [(query, doc.page_content) for doc, _ in valid_results]
+
+    # 批量推理
+    scores = []
+    with torch.no_grad():
+        for text_pair in pairs:
+            inputs = tokenizer(
+                text_pair[0], text_pair[1],
+                return_tensors="pt",
+                truncation=True,
+                max_length=512,
+                padding=True
+            ).to("cuda")
+            outputs = reranker(**inputs)
+            logits = outputs.logits
+            # 处理不同的输出形状
+            if logits.shape[-1] == 1:
+                score = logits[0, 0].item()
+            else:
+                # 假设第二维是2，取正类概率
+                probs = torch.softmax(logits, dim=-1)
+                score = probs[0, 1].item()
+            scores.append(score)
+
+    # 按分数降序排序
+    reranked = sorted(zip(valid_results, scores), key=lambda x: x[1], reverse=True)[:TOP_K_RERANK]
     return reranked
 
 def main():
