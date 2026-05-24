@@ -1,3 +1,32 @@
-/models/rag/
-/vector_db/
-/knowledge/
+# ── Python ────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── 环境与密钥 ───────────────────────────
+.env
+.venv/
+venv/
+env/
+
+# ── IDE ──────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── 模型与数据（Docker 挂载） ────────────
+models/rag/
+knowledge/
+vector_db/
+
+# ── 日志 ─────────────────────────────────
+logs/
+*.log
+
+# ── OS ───────────────────────────────────
+.DS_Store
+Thumbs.db
