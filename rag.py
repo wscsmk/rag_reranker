@@ -1,15 +1,12 @@
 import os
 import warnings
-
 import torch
 from requests.compat import chardet
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
-
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 EMBEDDING_MODEL_PATH = os.path.join(BASE_DIR, "models", "rag", "acge_text_embedding")
 RERANKER_MODEL_PATH = os.path.join(BASE_DIR, "models", "rag", "Qwen3-Reranker-4B")
